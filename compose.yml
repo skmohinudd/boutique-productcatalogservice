@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: boutique-product-postgres
+    environment:
+      POSTGRES_DB: productdb
+      POSTGRES_USER: productuser
+      POSTGRES_PASSWORD: productpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - product-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U productuser -d productdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  product-postgres-data:

@@ -1,1 +1,13 @@
-vendor/
+.git
+.github
+.vscode
+.idea
+target
+legacy-go
+products-legacy.json
+Dockerfile.legacy-go
+.dockerignore.legacy-go
+*.log
+.env
+.env.*
+README.md
