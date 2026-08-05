@@ -1,38 +1,63 @@
-# productcatalogservice
+# boutique-productcatalogservice
 
-Run the following command to restore dependencies to `vendor/` directory:
+Owns product catalog data, SKU validation, product details and catalog lifecycle APIs.
 
-    go mod vendor
+## Overview
 
-## Dynamic catalog reloading / artificial delay
+- **Type:** Spring Boot service
+- **Stack:** Java 21, Spring Boot, Maven, JPA, PostgreSQL, Flyway, Actuator, Docker
+- **Port:** `8080`
 
-This service has a "dynamic catalog reloading" feature that is purposefully
-not well implemented. The goal of this feature is to allow you to modify the
-`products.json` file and have the changes be picked up without having to
-restart the service.
+## Flow
 
-However, this feature is bugged: the catalog is actually reloaded on each
-request, introducing a noticeable delay in the frontend. This delay will also
-show up in profiling tools: the `parseCatalog` function will take more than 80%
-of the CPU time.
-
-You can trigger this feature (and the delay) by sending a `USR1` signal and
-remove it (if needed) by sending a `USR2` signal:
-
-```
-# Trigger bug
-kubectl exec \
-    $(kubectl get pods -l app=productcatalogservice -o jsonpath='{.items[0].metadata.name}') \
-    -c server -- kill -USR1 1
-# Remove bug
-kubectl exec \
-    $(kubectl get pods -l app=productcatalogservice -o jsonpath='{.items[0].metadata.name}') \
-    -c server -- kill -USR2 1
+```text
+Client / service → Controller → Business logic → Database / events / downstream services
 ```
 
-## Latency injection
+## Main APIs
 
-This service has an `EXTRA_LATENCY` environment variable. This will inject a sleep for the specified [time.Duration](https://golang.org/pkg/time/#ParseDuration) on every call to
-to the server.
+```text
+Get /productId
+```
 
-For example, use `EXTRA_LATENCY="5.5s"` to sleep for 5.5 seconds on every request.
+## Database
+
+```text
+products
+```
+
+## Configuration
+
+```text
+DB_CONNECTION_TIMEOUT_MS
+DB_MAX_LIFETIME_MS
+DB_PASSWORD
+DB_POOL_MAX_SIZE
+DB_POOL_MIN_IDLE
+DB_URL
+DB_USERNAME
+DB_VALIDATION_TIMEOUT_MS
+```
+
+## Run
+
+```bash
+./mvnw spring-boot:run
+./mvnw clean verify
+```
+
+## Docker
+
+```bash
+docker build -t boutique-productcatalogservice:local .
+```
+
+## Health
+
+```bash
+curl http://localhost:8080/actuator/health
+```
+
+## CI/CD
+
+This repository is built and deployed independently through its own GitHub Actions workflow.
