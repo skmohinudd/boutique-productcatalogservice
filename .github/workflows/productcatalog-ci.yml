@@ -68,11 +68,10 @@ jobs:
       - name: Build application JAR
         run: ./mvnw package -DskipTests
 
-      # Send source-code analysis to the dedicated Product Catalog project
-      # in SonarQube. We are NOT enforcing the Sonar Quality Gate yet.
-      #
-      # Nexus settings are used so Maven dependencies continue to resolve
-      # through our Nexus repository instead of directly from Maven Central.
+            # Analyze Product Catalog source code and send the results to SonarQube.
+      # We call the Sonar Maven plugin explicitly instead of relying on
+      # Maven's plugin-prefix discovery.
+      # Quality Gate enforcement is intentionally not enabled yet.
       - name: Run SonarQube analysis
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -82,7 +81,7 @@ jobs:
         run: |
           ./mvnw \
             -s .mvn/nexus-settings.xml \
-            sonar:sonar \
+            org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
             -Dsonar.projectKey=boutique-productcatalogservice \
             -Dsonar.projectName="Boutique Product Catalog Service" \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
