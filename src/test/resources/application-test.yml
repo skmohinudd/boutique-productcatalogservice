@@ -1,0 +1,16 @@
+# Local/CI-only Spring profile. Production remains PostgreSQL/RDS via runtime environment variables.
+spring:
+  datasource:
+    url: jdbc:h2:mem:boutique_test;MODE=PostgreSQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  flyway:
+    enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+logging:
+  level:
+    org.springframework: WARN

@@ -117,6 +117,12 @@
             <artifactId>aws-lambda-java-core</artifactId>
             <version>1.4.0</version>
         </dependency>
+            <!-- In-memory database for deterministic local/CI context tests only. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
