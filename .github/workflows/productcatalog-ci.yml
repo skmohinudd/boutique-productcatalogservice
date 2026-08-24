@@ -101,7 +101,7 @@ jobs:
             -DskipTests
 
       # Print important artifact information for easy troubleshooting
-      # and traceability in the GitHub Actions logs.
+      # and traceability in the GitHub Actions logs. added
       - name: Display build information
         run: |
           echo "Service       : productcatalogservice"
