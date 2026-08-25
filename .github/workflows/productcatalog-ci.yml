@@ -316,8 +316,7 @@ jobs:
             --server-side=true \
             --force-conflicts \
             --wait \
-            --rollback-on-failure \
-            --timeout 5m
+            --timeout 4m
 
       # Wait until Kubernetes completes the rolling deployment.
       - name: Verify deployment rollout
