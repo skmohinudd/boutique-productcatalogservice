@@ -1,35 +1,48 @@
-# CI workflow for the Boutique Product Catalog Service.
-# It validates the code, creates a versioned JAR, performs SonarQube analysis,
-# and publishes the final Maven artifact to Nexus.
-
-name: Product Catalog CI
+# Product Catalog CI/CD: Test -> SonarQube -> Nexus -> ECR -> Helm -> EKS
+name: Product Catalog CI/CD
 
 on:
-  # Run automatically whenever code is pushed to the main branch.
   push:
     branches:
       - main
-
-  # Validate changes before they are merged into main.
   pull_request:
     branches:
       - main
-
-  # Allow engineers to manually trigger the pipeline from GitHub Actions.
   workflow_dispatch:
 
-jobs:
-  build-test-nexus-sonar:
+# Prevent overlapping deployments for the same branch.
+concurrency:
+  group: productcatalog-${{ github.ref }}
+  cancel-in-progress: false
 
-    # GitHub provides a fresh temporary Ubuntu runner for this job.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  SERVICE_NAME: productcatalogservice
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: '663130434910'
+  ECR_REPOSITORY: boutique-productcatalogservice
+  EKS_CLUSTER_NAME: boutique-dev-eks
+  K8S_NAMESPACE: boutique
+  HELM_RELEASE: productcatalogservice
+  K8S_DEPLOYMENT: productcatalogservice
+  PLATFORM_REPOSITORY: skmohinudd/boutique-platform-infra
+  HELM_CHART_PATH: boutique-platform-infra/helm/productcatalogservice
+
+jobs:
+  build-test-deploy:
+    name: Build, Analyze, Publish and Deploy
     runs-on: ubuntu-latest
+    timeout-minutes: 35
 
     steps:
-      # Download the repository source code onto the GitHub runner.
+      # Checkout Product Catalog application source code.
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      # Install Java 21 and enable Maven dependency caching on the runner.
+      # Install Java 21 and enable Maven dependency caching.
       - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
@@ -37,42 +50,55 @@ jobs:
           java-version: '21'
           cache: maven
 
-      # Linux runners require the Maven wrapper to have execute permission.
+      # Allow Maven Wrapper execution on the Linux runner.
       - name: Make Maven wrapper executable
         run: chmod +x mvnw
 
-      # Create a unique application version for every GitHub Actions run.
-      # Example: GitHub run 25 produces version 1.0.25.
-      # GITHUB_ENV makes APP_VERSION available to all following steps.
+      # Generate one version for Sonar, Nexus, ECR, Helm and EKS.
       - name: Generate application version
         run: |
-          VERSION="1.0.${GITHUB_RUN_NUMBER}"
-          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "Application version: $VERSION"
+          APP_VERSION="1.0.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
+          echo "Application version: $APP_VERSION"
 
-      # Replace the POM version only inside this temporary CI runner.
-      # The repository's original pom.xml is not committed or modified in Git.
+      # Apply the generated version to Maven only inside this CI runner.
       - name: Set Maven artifact version
         run: |
           ./mvnw versions:set \
             -DnewVersion="${APP_VERSION}" \
             -DgenerateBackupPoms=false
 
-      # Execute automated tests before creating/publishing the artifact.
-      # A real test failure stops the workflow here.
-      - name: Run Maven tests
+      # Pull requests run tests without publishing or deployment.
+      - name: Run Maven tests for pull request
+        if: github.event_name == 'pull_request'
         run: ./mvnw clean test
 
-      # Package the compiled application into a versioned executable JAR.
-      # Tests are skipped here because they already ran in the previous step.
+      # Main/manual builds resolve Maven dependencies through Nexus.
+      - name: Run Maven tests through Nexus
+        if: github.event_name != 'pull_request'
+        env:
+          NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+        run: |
+          ./mvnw \
+            -s .mvn/nexus-settings.xml \
+            clean test
+
+      # Build the versioned executable application JAR.
       - name: Build application JAR
         run: ./mvnw package -DskipTests
 
-            # Analyze Product Catalog source code and send the results to SonarQube.
-      # We call the Sonar Maven plugin explicitly instead of relying on
-      # Maven's plugin-prefix discovery.
-      # Quality Gate enforcement is intentionally not enabled yet.
+      # Verify the expected versioned JAR exists.
+      - name: Verify application JAR
+        run: |
+          JAR_NAME="${SERVICE_NAME}-${APP_VERSION}.jar"
+          test -f "target/${JAR_NAME}"
+          echo "JAR_NAME=$JAR_NAME" >> "$GITHUB_ENV"
+          echo "JAR verified: $JAR_NAME"
+
+      # Analyze code in SonarQube using the same application version.
       - name: Run SonarQube analysis
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -84,13 +110,13 @@ jobs:
             org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
             -Dsonar.projectKey=boutique-productcatalogservice \
             -Dsonar.projectName="Boutique Product Catalog Service" \
+            -Dsonar.projectVersion="${APP_VERSION}" \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.token="${SONAR_TOKEN}"
 
-      # Publish the versioned Maven artifact to Nexus.
-      # Because APP_VERSION is a release-style version (for example 1.0.25),
-      # Maven distributionManagement sends it to maven-releases.
+      # Publish the same versioned JAR to Nexus releases.
       - name: Publish artifact to Nexus
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
@@ -100,10 +126,172 @@ jobs:
             deploy \
             -DskipTests
 
-      # Print important artifact information for easy troubleshooting
-      # and traceability in the GitHub Actions logs. added
-      - name: Display build information
+      # Authenticate GitHub Actions to AWS using short-lived OIDC credentials.
+      - name: Configure AWS credentials
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: productcatalog-${{ github.run_id }}
+          allowed-account-ids: '663130434910'
+
+      # Verify the IAM identity assumed through GitHub OIDC.
+      - name: Verify AWS identity
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: aws sts get-caller-identity
+
+      # Verify that the Product Catalog ECR repository exists.
+      - name: Verify ECR repository
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
-          echo "Service       : productcatalogservice"
-          echo "Version       : ${APP_VERSION}"
-          echo "Nexus artifact: productcatalogservice-${APP_VERSION}.jar"
+          aws ecr describe-repositories \
+            --repository-names "$ECR_REPOSITORY" \
+            --region "$AWS_REGION"
+
+      # Authenticate Docker with Amazon ECR.
+      - name: Login to Amazon ECR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build both immutable version and latest tags from the same image.
+      - name: Build Docker image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE_REPOSITORY="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+          IMAGE_URI="${IMAGE_REPOSITORY}:${APP_VERSION}"
+          LATEST_IMAGE_URI="${IMAGE_REPOSITORY}:latest"
+          echo "IMAGE_REPOSITORY=$IMAGE_REPOSITORY" >> "$GITHUB_ENV"
+          echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
+          echo "LATEST_IMAGE_URI=$LATEST_IMAGE_URI" >> "$GITHUB_ENV"
+          docker build \
+            --label "org.opencontainers.image.version=${APP_VERSION}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t "$IMAGE_URI" \
+            -t "$LATEST_IMAGE_URI" \
+            .
+
+      # Push the immutable version and latest alias to ECR.
+      - name: Push Docker images to ECR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "$IMAGE_URI"
+          docker push "$LATEST_IMAGE_URI"
+
+      # Verify the new immutable image exists before deployment.
+      - name: Verify ECR image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$APP_VERSION" \
+            --region "$AWS_REGION"
+
+      # Install kubectl for EKS operations.
+      - name: Setup kubectl
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: azure/setup-kubectl@v5.1.0
+
+      # Install Helm for Kubernetes deployment.
+      - name: Setup Helm
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: azure/setup-helm@v5.0.0
+
+      # Checkout the public central repository containing Helm charts.
+      - name: Checkout platform repository
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PLATFORM_REPOSITORY }}
+          path: boutique-platform-infra
+          persist-credentials: false
+
+      # Verify and validate the Product Catalog Helm chart.
+      - name: Validate Helm chart
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          test -f "${HELM_CHART_PATH}/Chart.yaml"
+          test -f "${HELM_CHART_PATH}/values.yaml"
+          helm lint "$HELM_CHART_PATH"
+          helm template "$HELM_RELEASE" "$HELM_CHART_PATH" \
+            --namespace "$K8S_NAMESPACE" \
+            --set image.repository="$IMAGE_REPOSITORY" \
+            --set image.tag="$APP_VERSION" \
+            > /tmp/productcatalog-rendered.yaml
+
+      # Configure kubectl for the existing Boutique EKS cluster.
+      - name: Configure Amazon EKS
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          aws eks update-kubeconfig \
+            --region "$AWS_REGION" \
+            --name "$EKS_CLUSTER_NAME"
+
+      # Verify the GitHub IAM role has Kubernetes deployment access.
+      - name: Verify EKS access
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          kubectl get namespace "$K8S_NAMESPACE"
+          kubectl auth can-i get deployments -n "$K8S_NAMESPACE"
+          kubectl auth can-i patch deployments -n "$K8S_NAMESPACE"
+
+      # Show the old image before replacing it with the new version.
+      - name: Show current deployed image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          kubectl get deployment "$K8S_DEPLOYMENT" \
+            -n "$K8S_NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' || true
+          echo
+
+      # Deploy the exact new immutable image and trigger a Kubernetes rolling update.
+      - name: Deploy Product Catalog with Helm
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          helm upgrade --install "$HELM_RELEASE" "$HELM_CHART_PATH" \
+            --namespace "$K8S_NAMESPACE" \
+            --create-namespace \
+            --set image.repository="$IMAGE_REPOSITORY" \
+            --set image.tag="$APP_VERSION" \
+            --wait \
+            --atomic \
+            --timeout 5m
+
+      # Wait until new pods replace the old application pods.
+      - name: Verify deployment rollout
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          kubectl rollout status \
+            deployment/"$K8S_DEPLOYMENT" \
+            -n "$K8S_NAMESPACE" \
+            --timeout=180s
+
+      # Confirm the Deployment references exactly the new versioned image.
+      - name: Verify deployed image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          DEPLOYED_IMAGE="$(kubectl get deployment "$K8S_DEPLOYMENT" \
+            -n "$K8S_NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          echo "Expected image: $IMAGE_URI"
+          echo "Deployed image: $DEPLOYED_IMAGE"
+          test "$DEPLOYED_IMAGE" = "$IMAGE_URI"
+
+      # Display final Kubernetes state and release traceability information.
+      - name: Display deployment information
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          kubectl get deployment "$K8S_DEPLOYMENT" -n "$K8S_NAMESPACE" -o wide
+          kubectl get pods -n "$K8S_NAMESPACE" -l app=productcatalogservice -o wide
+          echo "Service        : ${SERVICE_NAME}"
+          echo "Version        : ${APP_VERSION}"
+          echo "Git Commit     : ${GITHUB_SHA}"
+          echo "Sonar Version  : ${APP_VERSION}"
+          echo "Nexus Artifact : ${JAR_NAME}"
+          echo "ECR Image      : ${IMAGE_URI}"
+          echo "ECR Latest     : ${LATEST_IMAGE_URI}"
+          echo "Helm Image Tag : ${APP_VERSION}"
+          echo "EKS Image      : ${IMAGE_URI}"
