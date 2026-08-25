@@ -26,7 +26,7 @@ env:
   ECR_REPOSITORY: boutique-productcatalogservice
   EKS_CLUSTER_NAME: boutique-dev-eks
   K8S_NAMESPACE: boutique
-  HELM_RELEASE: productcatalogservice
+  HELM_RELEASE: productcatalog-dev
   K8S_DEPLOYMENT: productcatalogservice
   PLATFORM_REPOSITORY: skmohinudd/boutique-platform-infra
   HELM_CHART_PATH: boutique-platform-infra/helm/productcatalogservice
@@ -250,12 +250,14 @@ jobs:
           test "$(kubectl auth can-i patch deployments -n "$K8S_NAMESPACE")" = "yes"
           echo "EKS authorization verified"
 
-      # Verify existing Product Catalog resources belong to this Helm release.
+      # Verify every existing Product Catalog resource belongs to productcatalog-dev.
       - name: Verify Helm resource ownership
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           RESOURCES=(
+            "configmap/productcatalog-config"
+            "secret/productcatalog-db-secret"
             "deployment/productcatalogservice"
             "service/productcatalogservice"
             "hpa/productcatalogservice-hpa"
@@ -282,14 +284,15 @@ jobs:
             if [[ "$MANAGED_BY" != "Helm" ||
                   "$RELEASE_NAME" != "$HELM_RELEASE" ||
                   "$RELEASE_NAMESPACE" != "$K8S_NAMESPACE" ]]; then
-              echo "ERROR: $resource exists but is not owned by Helm release $HELM_RELEASE"
-              echo "managed-by       : $MANAGED_BY"
-              echo "release-name     : $RELEASE_NAME"
-              echo "release-namespace: $RELEASE_NAMESPACE"
+              echo "ERROR: $resource has incorrect Helm ownership"
+              echo "Expected release  : $HELM_RELEASE"
+              echo "Current release   : $RELEASE_NAME"
+              echo "Managed by        : $MANAGED_BY"
+              echo "Release namespace : $RELEASE_NAMESPACE"
               exit 1
             fi
 
-            echo "OK: $resource is owned by Helm"
+            echo "OK: $resource -> $HELM_RELEASE"
           done
 
       # Show the image currently running before deployment.
@@ -302,13 +305,12 @@ jobs:
 
           echo "Current image: ${CURRENT_IMAGE:-not deployed}"
 
-      # Upgrade the Helm release with the exact immutable ECR image.
+      # Upgrade the existing productcatalog-dev Helm release with the new image.
       - name: Deploy Product Catalog with Helm
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           helm upgrade --install "$HELM_RELEASE" "$HELM_CHART_PATH" \
             --namespace "$K8S_NAMESPACE" \
-            --create-namespace \
             --set image.repository="$IMAGE_REPOSITORY" \
             --set image.tag="$APP_VERSION" \
             --wait \
@@ -337,7 +339,7 @@ jobs:
 
           test "$DEPLOYED_IMAGE" = "$IMAGE_URI"
 
-      # Display only useful release and Kubernetes information.and more.
+      # Display only useful release and Kubernetes information.
       - name: Display deployment information
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -351,5 +353,6 @@ jobs:
           echo "Git Commit     : ${GITHUB_SHA}"
           echo "Nexus Artifact : ${JAR_NAME}"
           echo "ECR Image      : ${IMAGE_URI}"
+          echo "Helm Release   : ${HELM_RELEASE}"
           echo "Helm Image Tag : ${APP_VERSION}"
           echo "EKS Image      : ${IMAGE_URI}"
