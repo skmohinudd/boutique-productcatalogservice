@@ -10,7 +10,7 @@ on:
       - main
   workflow_dispatch:
 
-# Prevent overlapping deployments for the same branch.
+# Prevent concurrent deployments of the same service branch.
 concurrency:
   group: productcatalog-${{ github.ref }}
   cancel-in-progress: false
@@ -38,7 +38,7 @@ jobs:
     timeout-minutes: 35
 
     steps:
-      # Checkout full Git history so SonarQube can calculate SCM blame correctly.
+      # Checkout complete Git history for accurate SonarQube SCM analysis.
       - name: Checkout source code
         uses: actions/checkout@v4
         with:
@@ -56,14 +56,14 @@ jobs:
       - name: Make Maven wrapper executable
         run: chmod +x mvnw
 
-      # Generate one common immutable version for Sonar, Nexus, ECR, Helm and EKS.
+      # Generate one immutable version for Sonar, Nexus, ECR, Helm and EKS.
       - name: Generate application version
         run: |
           APP_VERSION="1.0.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
           echo "APP_VERSION=$APP_VERSION" >> "$GITHUB_ENV"
           echo "Application version: $APP_VERSION"
 
-      # Apply the generated version only inside this temporary CI runner.
+      # Apply the CI version only inside this temporary runner.
       - name: Set Maven artifact version
         run: |
           ./mvnw --batch-mode --no-transfer-progress \
@@ -71,11 +71,10 @@ jobs:
             -DnewVersion="${APP_VERSION}" \
             -DgenerateBackupPoms=false
 
-      # Pull requests validate code without publishing or deployment.
+      # Pull requests validate code without publishing artifacts.
       - name: Run Maven tests for pull request
         if: github.event_name == 'pull_request'
-        run: |
-          ./mvnw --batch-mode --no-transfer-progress clean test
+        run: ./mvnw --batch-mode --no-transfer-progress clean test
 
       # Main/manual builds resolve dependencies through Nexus.
       - name: Run Maven tests through Nexus
@@ -88,12 +87,11 @@ jobs:
             -s .mvn/nexus-settings.xml \
             clean test
 
-      # Build the versioned executable application JAR.
+      # Build the immutable versioned application JAR.
       - name: Build application JAR
-        run: |
-          ./mvnw --batch-mode --no-transfer-progress package -DskipTests
+        run: ./mvnw --batch-mode --no-transfer-progress package -DskipTests
 
-      # Verify the expected versioned JAR exists.
+      # Verify the expected JAR exists.
       - name: Verify application JAR
         run: |
           JAR_NAME="${SERVICE_NAME}-${APP_VERSION}.jar"
@@ -101,7 +99,7 @@ jobs:
           echo "JAR_NAME=$JAR_NAME" >> "$GITHUB_ENV"
           echo "JAR verified: $JAR_NAME"
 
-      # Analyze code in SonarQube without enforcing the Quality Gate.
+      # Analyze source code without enforcing the Quality Gate.
       - name: Run SonarQube analysis
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
@@ -119,7 +117,7 @@ jobs:
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.token="${SONAR_TOKEN}"
 
-      # Publish the same versioned JAR to Nexus releases.
+      # Publish the same immutable version to Nexus releases.
       - name: Publish artifact to Nexus
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
@@ -131,7 +129,7 @@ jobs:
             deploy \
             -DskipTests
 
-      # Authenticate to AWS using GitHub OIDC short-lived credentials.
+      # Authenticate to AWS using GitHub OIDC.
       - name: Configure AWS credentials
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: aws-actions/configure-aws-credentials@v6.2.3
@@ -141,7 +139,7 @@ jobs:
           role-session-name: productcatalog-${{ github.run_id }}
           allowed-account-ids: '663130434910'
 
-      # Verify the exact AWS identity used by this deployment.
+      # Confirm which AWS role the workflow is using.
       - name: Verify AWS identity
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -149,7 +147,7 @@ jobs:
             --query '{Account:Account,Arn:Arn}' \
             --output table
 
-      # Verify the expected Product Catalog ECR repository exists.
+      # Verify the expected ECR repository exists.
       - name: Verify ECR repository
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -165,7 +163,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Build one immutable Docker image using the common application version.
+      # Build only the immutable application image.
       - name: Build Docker image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
@@ -173,21 +171,22 @@ jobs:
         run: |
           IMAGE_REPOSITORY="${ECR_REGISTRY}/${ECR_REPOSITORY}"
           IMAGE_URI="${IMAGE_REPOSITORY}:${APP_VERSION}"
+
           echo "IMAGE_REPOSITORY=$IMAGE_REPOSITORY" >> "$GITHUB_ENV"
           echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
+
           docker build \
             --label "org.opencontainers.image.version=${APP_VERSION}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             -t "$IMAGE_URI" \
             .
 
-      # Push only the immutable versioned image to Amazon ECR.
+      # Push only the immutable versioned image to ECR.
       - name: Push Docker image to ECR
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        run: |
-          docker push --quiet "$IMAGE_URI"
+        run: docker push --quiet "$IMAGE_URI"
 
-      # Verify the exact immutable image exists in ECR before deployment.
+      # Verify the immutable image exists before deployment.
       - name: Verify ECR image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -198,17 +197,17 @@ jobs:
             --query 'imageDetails[0].{Tags:imageTags,Digest:imageDigest,PushedAt:imagePushedAt}' \
             --output table
 
-      # Install kubectl for EKS operations.
+      # Install kubectl.
       - name: Setup kubectl
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: azure/setup-kubectl@v5.1.0
 
-      # Install Helm for Kubernetes deployment.
+      # Install Helm.
       - name: Setup Helm
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: azure/setup-helm@v5.0.0
 
-      # Checkout the public central repository containing Helm charts.
+      # Checkout the public central platform repository.
       - name: Checkout platform repository
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/checkout@v4
@@ -217,21 +216,24 @@ jobs:
           path: boutique-platform-infra
           persist-credentials: false
 
-      # Validate the Product Catalog Helm chart before touching EKS.
+      # Validate chart files and render manifests before cluster deployment.
       - name: Validate Helm chart
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           test -f "${HELM_CHART_PATH}/Chart.yaml"
           test -f "${HELM_CHART_PATH}/values.yaml"
+
           helm lint "$HELM_CHART_PATH"
+
           helm template "$HELM_RELEASE" "$HELM_CHART_PATH" \
             --namespace "$K8S_NAMESPACE" \
             --set image.repository="$IMAGE_REPOSITORY" \
             --set image.tag="$APP_VERSION" \
             > /tmp/productcatalog-rendered.yaml
+
           echo "Helm chart validation passed"
 
-      # Configure kubectl for the existing Boutique EKS cluster.
+      # Configure kubectl for the Boutique EKS cluster.
       - name: Configure Amazon EKS
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -239,24 +241,68 @@ jobs:
             --region "$AWS_REGION" \
             --name "$EKS_CLUSTER_NAME"
 
-      # Verify Kubernetes authorization before starting the Helm deployment.
+      # Verify Kubernetes authorization before deployment.
       - name: Verify EKS access
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           kubectl get namespace "$K8S_NAMESPACE" -o name
-          echo "get deployments: $(kubectl auth can-i get deployments -n "$K8S_NAMESPACE")"
-          echo "patch deployments: $(kubectl auth can-i patch deployments -n "$K8S_NAMESPACE")"
+          test "$(kubectl auth can-i get deployments -n "$K8S_NAMESPACE")" = "yes"
+          test "$(kubectl auth can-i patch deployments -n "$K8S_NAMESPACE")" = "yes"
+          echo "EKS authorization verified"
 
-      # Show the currently deployed image before the rolling update.
+      # Verify existing Product Catalog resources belong to this Helm release.
+      - name: Verify Helm resource ownership
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          RESOURCES=(
+            "deployment/productcatalogservice"
+            "service/productcatalogservice"
+            "hpa/productcatalogservice-hpa"
+            "pdb/productcatalogservice-pdb"
+            "networkpolicy/productcatalogservice-network-policy"
+            "serviceaccount/productcatalogservice-sa"
+          )
+
+          for resource in "${RESOURCES[@]}"; do
+            if ! kubectl get "$resource" -n "$K8S_NAMESPACE" >/dev/null 2>&1; then
+              echo "NEW: $resource will be created by Helm"
+              continue
+            fi
+
+            MANAGED_BY="$(kubectl get "$resource" -n "$K8S_NAMESPACE" \
+              -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}')"
+
+            RELEASE_NAME="$(kubectl get "$resource" -n "$K8S_NAMESPACE" \
+              -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}')"
+
+            RELEASE_NAMESPACE="$(kubectl get "$resource" -n "$K8S_NAMESPACE" \
+              -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}')"
+
+            if [[ "$MANAGED_BY" != "Helm" ||
+                  "$RELEASE_NAME" != "$HELM_RELEASE" ||
+                  "$RELEASE_NAMESPACE" != "$K8S_NAMESPACE" ]]; then
+              echo "ERROR: $resource exists but is not owned by Helm release $HELM_RELEASE"
+              echo "managed-by       : $MANAGED_BY"
+              echo "release-name     : $RELEASE_NAME"
+              echo "release-namespace: $RELEASE_NAMESPACE"
+              exit 1
+            fi
+
+            echo "OK: $resource is owned by Helm"
+          done
+
+      # Show the image currently running before deployment.
       - name: Show current deployed image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           CURRENT_IMAGE="$(kubectl get deployment "$K8S_DEPLOYMENT" \
             -n "$K8S_NAMESPACE" \
             -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+
           echo "Current image: ${CURRENT_IMAGE:-not deployed}"
 
-      # Deploy the exact immutable image through Helm.
+      # Upgrade the Helm release with the exact immutable ECR image.
       - name: Deploy Product Catalog with Helm
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -266,7 +312,7 @@ jobs:
             --set image.repository="$IMAGE_REPOSITORY" \
             --set image.tag="$APP_VERSION" \
             --wait \
-            --atomic \
+            --rollback-on-failure \
             --timeout 5m
 
       # Wait until Kubernetes completes the rolling deployment.
@@ -278,24 +324,27 @@ jobs:
             -n "$K8S_NAMESPACE" \
             --timeout=180s
 
-      # Confirm Kubernetes is running exactly the image created by this workflow.
+      # Verify Kubernetes uses exactly the image produced by this workflow.
       - name: Verify deployed image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           DEPLOYED_IMAGE="$(kubectl get deployment "$K8S_DEPLOYMENT" \
             -n "$K8S_NAMESPACE" \
             -o jsonpath='{.spec.template.spec.containers[0].image}')"
+
           echo "Expected: $IMAGE_URI"
           echo "Running : $DEPLOYED_IMAGE"
+
           test "$DEPLOYED_IMAGE" = "$IMAGE_URI"
 
-      # Print only useful Kubernetes state and release traceability information.
+      # Display only useful release and Kubernetes information.
       - name: Display deployment information
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           echo "----- Kubernetes -----"
           kubectl get deployment "$K8S_DEPLOYMENT" -n "$K8S_NAMESPACE" -o wide
           kubectl get pods -n "$K8S_NAMESPACE" -l app=productcatalogservice -o wide
+
           echo "----- Release -----"
           echo "Service        : ${SERVICE_NAME}"
           echo "Version        : ${APP_VERSION}"
