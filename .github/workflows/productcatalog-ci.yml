@@ -337,7 +337,7 @@ jobs:
 
           test "$DEPLOYED_IMAGE" = "$IMAGE_URI"
 
-      # Display only useful release and Kubernetes information.
+      # Display only useful release and Kubernetes information.and more.
       - name: Display deployment information
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
