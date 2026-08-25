@@ -313,6 +313,8 @@ jobs:
             --namespace "$K8S_NAMESPACE" \
             --set image.repository="$IMAGE_REPOSITORY" \
             --set image.tag="$APP_VERSION" \
+            --server-side=true \
+            --force-conflicts \
             --wait \
             --rollback-on-failure \
             --timeout 5m
