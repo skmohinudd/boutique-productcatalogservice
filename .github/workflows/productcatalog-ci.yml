@@ -269,7 +269,7 @@ jobs:
             -n "$K8S_NAMESPACE" \
             --timeout=180s
 
-      # Confirm the Deployment references exactly the new versioned image.
+      # Confirm the Deployment references exactly the new versioned image...
       - name: Verify deployed image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
