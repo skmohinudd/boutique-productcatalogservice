@@ -56,7 +56,7 @@ jobs:
       - name: Make Maven wrapper executable
         run: chmod +x mvnw
 
-      # Generate one common version for Sonar, Nexus, ECR, Helm and EKS.
+      # Generate one common immutable version for Sonar, Nexus, ECR, Helm and EKS.
       - name: Generate application version
         run: |
           APP_VERSION="1.0.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
@@ -165,7 +165,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Build immutable version and latest tags from the same Docker image.
+      # Build one immutable Docker image using the common application version.
       - name: Build Docker image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
@@ -173,23 +173,19 @@ jobs:
         run: |
           IMAGE_REPOSITORY="${ECR_REGISTRY}/${ECR_REPOSITORY}"
           IMAGE_URI="${IMAGE_REPOSITORY}:${APP_VERSION}"
-          LATEST_IMAGE_URI="${IMAGE_REPOSITORY}:latest"
           echo "IMAGE_REPOSITORY=$IMAGE_REPOSITORY" >> "$GITHUB_ENV"
           echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
-          echo "LATEST_IMAGE_URI=$LATEST_IMAGE_URI" >> "$GITHUB_ENV"
           docker build \
             --label "org.opencontainers.image.version=${APP_VERSION}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             -t "$IMAGE_URI" \
-            -t "$LATEST_IMAGE_URI" \
             .
 
-      # Push immutable version and latest alias while hiding layer progress noise.
-      - name: Push Docker images to ECR
+      # Push only the immutable versioned image to Amazon ECR.
+      - name: Push Docker image to ECR
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           docker push --quiet "$IMAGE_URI"
-          docker push --quiet "$LATEST_IMAGE_URI"
 
       # Verify the exact immutable image exists in ECR before deployment.
       - name: Verify ECR image
@@ -251,7 +247,7 @@ jobs:
           echo "get deployments: $(kubectl auth can-i get deployments -n "$K8S_NAMESPACE")"
           echo "patch deployments: $(kubectl auth can-i patch deployments -n "$K8S_NAMESPACE")"
 
-      # Show the currently deployed image for deployment comparison.
+      # Show the currently deployed image before the rolling update.
       - name: Show current deployed image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -260,7 +256,7 @@ jobs:
             -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
           echo "Current image: ${CURRENT_IMAGE:-not deployed}"
 
-      # Deploy the exact new immutable image through Helm.
+      # Deploy the exact immutable image through Helm.
       - name: Deploy Product Catalog with Helm
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -282,7 +278,7 @@ jobs:
             -n "$K8S_NAMESPACE" \
             --timeout=180s
 
-      # Confirm Kubernetes is using exactly the image built by this workflow.
+      # Confirm Kubernetes is running exactly the image created by this workflow.
       - name: Verify deployed image
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -293,7 +289,7 @@ jobs:
           echo "Running : $DEPLOYED_IMAGE"
           test "$DEPLOYED_IMAGE" = "$IMAGE_URI"
 
-      # Print only useful deployment state and release traceability data.
+      # Print only useful Kubernetes state and release traceability information.
       - name: Display deployment information
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -306,6 +302,5 @@ jobs:
           echo "Git Commit     : ${GITHUB_SHA}"
           echo "Nexus Artifact : ${JAR_NAME}"
           echo "ECR Image      : ${IMAGE_URI}"
-          echo "ECR Latest     : ${LATEST_IMAGE_URI}"
           echo "Helm Image Tag : ${APP_VERSION}"
           echo "EKS Image      : ${IMAGE_URI}"
