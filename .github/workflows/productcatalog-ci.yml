@@ -209,7 +209,7 @@ jobs:
           path: boutique-platform-infra
           persist-credentials: false
 
-      # Verify and validate the Product Catalog Helm chart.
+      # Verify and validate the Product Catalog Helm chart....
       - name: Validate Helm chart
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
